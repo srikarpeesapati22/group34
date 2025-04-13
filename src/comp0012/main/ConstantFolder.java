@@ -44,7 +44,9 @@ public class ConstantFolder
 
 			boolean changed = false;
 			InstructionFinder f = new InstructionFinder(il);
+
 			
+			// Simple Folding START
 			// Updated pattern to handle both LDC and LDC2_W
 			String pattern = "(LDC|LDC2_W) (LDC|LDC2_W) (IADD|ISUB|IMUL|IDIV|LADD|LSUB|LMUL|LDIV|FADD|FSUB|FMUL|FDIV|DADD|DSUB|DMUL|DDIV)";
 			for (Iterator<?> it = f.search(pattern); it.hasNext();) {
