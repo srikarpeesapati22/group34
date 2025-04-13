@@ -62,7 +62,7 @@ public class ConstantFolder
 				changed = false;
 				InstructionHandle current = il.getStart();
 				while (current != null) {
-					InstructionHandle next = tryFoldExpressionChain(current, il, cpgen, constantVars);
+					InstructionHandle next = tryFoldExpression(current, il, cpgen, constantVars);
 					if (next != null) {
 						changed = true;
 						il.setPositions(true); 
@@ -266,53 +266,6 @@ public class ConstantFolder
 		}
 	
 		return after != null ? after.getNext() : null;
-	}
-	
-	private InstructionHandle tryFoldExpressionChain(InstructionHandle start, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
-		List<InstructionHandle> ops = new ArrayList<>();
-		InstructionHandle current = start;
-	
-		while (current != null && ops.size() < 10) { // hard limit to prevent runaway
-			Instruction inst = current.getInstruction();
-			ops.add(current);
-	
-			if (!(inst instanceof ArithmeticInstruction)) {
-				Number val = getConstantValue(current, cpgen, constants);
-				if (val == null) break;
-			}
-	
-			current = current.getNext();
-		}
-	
-		if (ops.size() < 3) return null;
-	
-		// Try to evaluate rightmost valid 3-instruction windows and collapse
-		for (int i = 0; i < ops.size() - 2; i++) {
-			InstructionHandle h1 = ops.get(i);
-			InstructionHandle h2 = ops.get(i + 1);
-			InstructionHandle h3 = ops.get(i + 2);
-	
-			Number v1 = getConstantValue(h1, cpgen, constants);
-			Number v2 = getConstantValue(h2, cpgen, constants);
-			Instruction inst3 = h3.getInstruction();
-	
-			if (v1 != null && v2 != null && inst3 instanceof ArithmeticInstruction) {
-				Number result = applyArithmetic(v1, v2, (ArithmeticInstruction) inst3);
-				if (result != null) {
-					replaceWithConstant(il, h1, h3, result, cpgen);
-					InstructionHandle after = h3.getNext();
-					if (after != null && after.getInstruction() instanceof StoreInstruction) {
-						StoreInstruction store = (StoreInstruction) after.getInstruction();
-						constants.put(store.getIndex(), result);
-						System.out.println("[DEBUG] New constant assignment after fold: var_" + store.getIndex() + " = " + result);
-					}
-
-					return h3.getNext();
-				}
-			}
-		}
-	
-		return null;
 	}
 	
 
