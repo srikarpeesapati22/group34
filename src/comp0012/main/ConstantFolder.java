@@ -131,8 +131,6 @@ public class ConstantFolder
 		}
 	}
 
-
-
 	private Number getConstantValue(InstructionHandle handle, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
 		Instruction inst = handle.getInstruction();
 	
@@ -182,19 +180,51 @@ public class ConstantFolder
 			if (op instanceof DDIV && val2.doubleValue() != 0.0) return val1.doubleValue() / val2.doubleValue();
 			if (op instanceof DREM && val2.doubleValue() != 0.0) return val1.doubleValue() % val2.doubleValue();
 		}
+		if (inst instanceof I2D) {
+			InstructionHandle prev = handle.getPrev();
+			if (prev != null) {
+				Number val = getConstantValue(prev, cpgen, constants);
+				if (val != null && val instanceof Integer) {
+					return val.doubleValue(); 
+				}
+			}
+		}
 	
 		// Not foldable
 		return null;
 	}
 
 	private Number evaluateRecursive(InstructionHandle start, int depth, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
+		Instruction inst = start.getInstruction();
+
+		// Handle cases like:
+		if (inst instanceof DADD) {
+			InstructionHandle i2dHandle = start.getPrev();
+			if (i2dHandle == null) return null;
+
+			Instruction i2d = i2dHandle.getInstruction();
+
+			if (i2d instanceof I2D) {
+				InstructionHandle intHandle = i2dHandle.getPrev();
+				InstructionHandle doubleHandle = intHandle != null ? intHandle.getPrev() : null;
+
+				if (intHandle == null || doubleHandle == null) return null;
+
+				Number left = getConstantValue(doubleHandle, cpgen, constants);  // double
+				Number right = getConstantValue(intHandle, cpgen, constants);    // int
+
+				if (left != null && right != null) {
+					double result = left.doubleValue() + right.doubleValue();
+					return result;
+				}
+			}
+		}
+		
 		if (start == null || depth > 5) return null;
 	
-		Instruction inst = start.getInstruction();
-		Number left = getConstantValue(start, cpgen, constants); // FIXED HERE
+		Number left = getConstantValue(start, cpgen, constants);
 	
 		if (left == null) {
-			// Try to fold recursively from earlier
 			InstructionHandle leftStart = start.getPrev();
 			if (leftStart == null || leftStart.getPrev() == null) return null;
 	
@@ -204,14 +234,14 @@ public class ConstantFolder
 	
 			if (op3 == null || !(op3.getInstruction() instanceof ArithmeticInstruction)) return null;
 	
-			Number v1 = getConstantValue(op1, cpgen, constants); // FIXED HERE
-			Number v2 = getConstantValue(op2, cpgen, constants); // FIXED HERE
+			Number v1 = getConstantValue(op1, cpgen, constants); 
+			Number v2 = getConstantValue(op2, cpgen, constants); 
 			ArithmeticInstruction op = (ArithmeticInstruction) op3.getInstruction();
 	
 			if (v1 != null && v2 != null) {
 				Number result = applyArithmetic(v1, v2, op);
 				if (result != null) {
-					constants.putIfAbsent(999 + depth, result); // pseudo-var slot for nested results
+					constants.putIfAbsent(999 + depth, result); 
 					return result;
 				}
 			}
@@ -220,7 +250,6 @@ public class ConstantFolder
 		return left;
 	}
 	
-
 	private Number applyArithmetic(Number v1, Number v2, ArithmeticInstruction op) {
 		if (op instanceof IADD) return v1.intValue() + v2.intValue();
 		if (op instanceof ISUB) return v1.intValue() - v2.intValue();
@@ -283,12 +312,6 @@ public class ConstantFolder
 		il.setPositions(true);
 		return nextAfter; // resume after folded section
 	}
-	
-	
-	
-	
-	
-	
 
 	private Set<Integer> findReassignedVariables(InstructionList il) {
 		Set<Integer> reassigned = new HashSet<>();
