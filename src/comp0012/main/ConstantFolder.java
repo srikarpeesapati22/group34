@@ -5,6 +5,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,7 @@ import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.Code;
 import org.apache.bcel.classfile.JavaClass;
 import org.apache.bcel.classfile.Method;
+import org.apache.bcel.classfile.Field;
 import org.apache.bcel.util.InstructionFinder;
 import org.apache.bcel.generic.*;
 
@@ -46,6 +48,15 @@ public class ConstantFolder
 	
 			// Step 1: Track constant assignments
 			Map<Integer, Number> constantVars = findConstantAssignments(il, cpgen);
+			Set<Integer> reassigned = findReassignedVariables(il);
+
+			// Remove reassigned variables from constant folding
+			for (Integer varIndex : reassigned) {
+				if (constantVars.containsKey(varIndex)) {
+					System.out.println("[INFO] Removing var_" + varIndex + " from constants due to reassignment.");
+					constantVars.remove(varIndex);
+				}
+			}
 	
 			// Step 2: Find and store all replacements first
 			List<InstructionHandle> handlesToReplace = new ArrayList<>();
@@ -73,6 +84,12 @@ public class ConstantFolder
 								handle.getPosition() + ", replacing with value: " + value);
 
 				replaceWithConstant(il, handle, handle, value, cpgen);
+			}
+
+			InstructionHandle current = il.getStart();
+			while (current != null) {
+				InstructionHandle next = tryFoldExpression(current, il, cpgen, constantVars);
+				current = (next != null) ? next : current.getNext();
 			}
 	
 			// Finalize method and apply
@@ -153,13 +170,106 @@ public class ConstantFolder
 	}
 
 	// Helper to find variables that are reassigned (and thus non-constant)
-	//private Set<Integer> findReassignedVariables(InstructionList il) {}
+	private Set<Integer> findReassignedVariables(InstructionList il) {
+		Set<Integer> reassigned = new HashSet<>();
+		Map<Integer, Integer> firstSeenStore = new HashMap<>();
+
+		for (InstructionHandle handle = il.getStart(); handle != null; handle = handle.getNext()) {
+			Instruction inst = handle.getInstruction();
+
+			if (inst instanceof StoreInstruction) {
+				StoreInstruction store = (StoreInstruction) inst;
+				int varIndex = store.getIndex();
+
+				if (!firstSeenStore.containsKey(varIndex)) {
+					firstSeenStore.put(varIndex, handle.getPosition());
+				} else {
+					reassigned.add(varIndex);
+					System.out.println("[DEBUG] Variable var_" + varIndex +
+							" is reassigned at instruction position " + handle.getPosition());
+				}
+			}
+		}
+
+		System.out.println("[DEBUG] Reassigned variables: " + reassigned);
+		return reassigned;
+	}
 
 	// Helper to fold constant usages using tracked constant variables
 	//private void foldConstants(MethodGen mg, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {}
 
 	// Utility: Tries to fold a sequence of instructions starting from a load using known constants
-	//private InstructionHandle tryFoldExpression(InstructionHandle handle, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {}
+	private InstructionHandle tryFoldExpression(InstructionHandle handle, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
+		Instruction inst1 = handle.getInstruction();
+		InstructionHandle next1 = handle.getNext();
+		if (next1 == null) return null;
+	
+		Instruction inst2 = next1.getInstruction();
+		InstructionHandle next2 = next1.getNext();
+		if (next2 == null) return null;
+	
+		Instruction inst3 = next2.getInstruction();
+	
+		Number val1 = null;
+		Number val2 = null;
+	
+		// --- Step 1: Load first operand ---
+		val1 = getConstantValue(inst1, cpgen, constants);
+		if (val1 == null) return null;
+	
+		// --- Step 2: Load second operand ---
+		val2 = getConstantValue(inst2, cpgen, constants);
+		if (val2 == null) return null;
+	
+		// --- Step 3: Arithmetic folding ---
+		Number result = null;
+	
+		// INT
+		if (inst3 instanceof IADD) result = val1.intValue() + val2.intValue();
+		else if (inst3 instanceof ISUB) result = val1.intValue() - val2.intValue();
+		else if (inst3 instanceof IMUL) result = val1.intValue() * val2.intValue();
+		else if (inst3 instanceof IDIV && val2.intValue() != 0) result = val1.intValue() / val2.intValue();
+		else if (inst3 instanceof IREM && val2.intValue() != 0) result = val1.intValue() % val2.intValue();
+	
+		// LONG
+		else if (inst3 instanceof LADD) result = val1.longValue() + val2.longValue();
+		else if (inst3 instanceof LSUB) result = val1.longValue() - val2.longValue();
+		else if (inst3 instanceof LMUL) result = val1.longValue() * val2.longValue();
+		else if (inst3 instanceof LDIV && val2.longValue() != 0) result = val1.longValue() / val2.longValue();
+		else if (inst3 instanceof LREM && val2.longValue() != 0) result = val1.longValue() % val2.longValue();
+	
+		// DOUBLE
+		else if (inst3 instanceof DADD) result = val1.doubleValue() + val2.doubleValue();
+		else if (inst3 instanceof DSUB) result = val1.doubleValue() - val2.doubleValue();
+		else if (inst3 instanceof DMUL) result = val1.doubleValue() * val2.doubleValue();
+		else if (inst3 instanceof DDIV && val2.doubleValue() != 0.0) result = val1.doubleValue() / val2.doubleValue();
+		else if (inst3 instanceof DREM && val2.doubleValue() != 0.0) result = val1.doubleValue() % val2.doubleValue();
+	
+		// Unsupported or divide by zero
+		if (result == null) return null;
+	
+		System.out.println("[DEBUG] Folding expression at " + handle.getPosition() + ": " +
+				val1 + " " + inst3.getName() + " " + val2 + " = " + result);
+	
+		replaceWithConstant(il, handle, next2, result, cpgen);
+		return next2.getNext();
+	}
+	
+	private Number getConstantValue(Instruction inst, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
+		if (inst instanceof ConstantPushInstruction) {
+			return ((ConstantPushInstruction) inst).getValue();
+		} else if (inst instanceof LDC) {
+			Object val = ((LDC) inst).getValue(cpgen);
+			return (val instanceof Number) ? (Number) val : null;
+		} else if (inst instanceof LDC2_W) {
+			Object val = ((LDC2_W) inst).getValue(cpgen);
+			return (val instanceof Number) ? (Number) val : null;
+		} else if (inst instanceof LoadInstruction) {
+			int index = ((LoadInstruction) inst).getIndex();
+			return constants.getOrDefault(index, null);
+		}
+		return null;
+	}
 
 	// Utility: Replaces an expression with a constant (e.g., ldc 3650)
 	private void replaceWithConstant(InstructionList il, InstructionHandle from, InstructionHandle to, Number value, ConstantPoolGen cpgen) {

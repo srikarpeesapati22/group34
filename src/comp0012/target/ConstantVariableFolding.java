@@ -27,4 +27,31 @@ public class ConstantVariableFolding
         return x > y;
     }
 
+    public int methodFive(){
+        int x = 45;
+        int y = 47;
+        x = 50;
+        return x + y;
+    }
+
+    public int methodSix(){
+        int x = 45;
+        int y = 50;
+        int z = x + y;
+        return x + y + z;
+    }
+
+    public boolean methodSeven(){
+        boolean x = true;
+        boolean y = false;
+        boolean z = x == y;
+        return z;
+    }
+
+    public double methodEight(){
+        double x = 1.67;
+        double y = 2.05;
+        double z = 1.67 + 2.05;
+        return z;
+    }
 }
