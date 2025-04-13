@@ -54,4 +54,11 @@ public class ConstantVariableFolding
         double z = 1.67 + 2.05;
         return z;
     }
+
+    public int methodNine(){
+        int a = 2;
+        int b = a + 5;
+        int c = b * 3;
+        return c + 7;
+    }
 }

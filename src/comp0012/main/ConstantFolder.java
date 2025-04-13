@@ -62,12 +62,24 @@ public class ConstantFolder
 				changed = false;
 				InstructionHandle current = il.getStart();
 				while (current != null) {
-					InstructionHandle next = tryFoldExpression(current, il, cpgen, constantVars);
-					if (next != null) changed = true;
+					InstructionHandle next = tryFoldExpressionChain(current, il, cpgen, constantVars);
+					if (next != null) {
+						changed = true;
+						il.setPositions(true); 
+					}
 					current = (next != null) ? next : current.getNext();
 				}
 			} while (changed);
 
+			if (il != null) {
+				il.setPositions(true);
+				mg.setMaxStack();
+				mg.setMaxLocals();
+			
+				// Rebuild the method with updated StackMapTable
+				Method newMethod = mg.getMethod(); // this triggers recomputation
+				cgen.replaceMethod(method, newMethod);
+			}
 		}
 	}
 
@@ -81,12 +93,12 @@ public class ConstantFolder
 	
 
 	private void replaceWithConstant(InstructionList il,
-                                  InstructionHandle from,
-                                  InstructionHandle to,
-                                  Number value,
-                                  ConstantPoolGen cpgen) {
+                                 InstructionHandle from,
+                                 InstructionHandle to,
+                                 Number value,
+                                 ConstantPoolGen cpgen) {
 		try {
-			// 1. Create the constant instruction
+			// Create the correct constant instruction
 			Instruction constInstr;
 			if (value instanceof Integer) {
 				constInstr = new LDC(cpgen.addInteger(value.intValue()));
@@ -101,29 +113,24 @@ public class ConstantFolder
 				return;
 			}
 
-			// 2. Insert constant before 'from'
+			// Insert the constant before 'from'
 			InstructionHandle inserted = il.insert(from, constInstr);
 
-			// 3. Redirect targeters from the original range to the new constant
-			redirectTargeters(to, inserted);
-			InstructionHandle curr = from;
-			while (curr != to) {
-				InstructionHandle next = curr.getNext();
-				redirectTargeters(curr, inserted);
-				il.delete(curr);
-				curr = next;
+			// Redirect all targeters to the new constant
+			for (InstructionHandle h = from; h != to.getNext(); h = h.getNext()) {
+				redirectTargeters(h, inserted);
 			}
 
-			// 4. Delete the 'to' instruction
-			redirectTargeters(to, inserted);
-			il.delete(to);
+			// Delete range cleanly
+			il.delete(from, to);
 
-			System.out.println("[DEBUG] Replaced instructions from " + from.getPosition() +
-							" to " + to.getPosition() + " with constant " + value);
+			System.out.println("[DEBUG] Replaced instructions from " +
+				from.getPosition() + " to " + to.getPosition() + " with constant " + value);
 		} catch (TargetLostException e) {
 			System.err.println("[ERROR] Failed to replace expression with constant: " + e.getMessage());
 		}
 	}
+
 
 
 	private Number getConstantValue(InstructionHandle handle, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
@@ -261,7 +268,53 @@ public class ConstantFolder
 		return after != null ? after.getNext() : null;
 	}
 	
+	private InstructionHandle tryFoldExpressionChain(InstructionHandle start, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
+		List<InstructionHandle> ops = new ArrayList<>();
+		InstructionHandle current = start;
+	
+		while (current != null && ops.size() < 10) { // hard limit to prevent runaway
+			Instruction inst = current.getInstruction();
+			ops.add(current);
+	
+			if (!(inst instanceof ArithmeticInstruction)) {
+				Number val = getConstantValue(current, cpgen, constants);
+				if (val == null) break;
+			}
+	
+			current = current.getNext();
+		}
+	
+		if (ops.size() < 3) return null;
+	
+		// Try to evaluate rightmost valid 3-instruction windows and collapse
+		for (int i = 0; i < ops.size() - 2; i++) {
+			InstructionHandle h1 = ops.get(i);
+			InstructionHandle h2 = ops.get(i + 1);
+			InstructionHandle h3 = ops.get(i + 2);
+	
+			Number v1 = getConstantValue(h1, cpgen, constants);
+			Number v2 = getConstantValue(h2, cpgen, constants);
+			Instruction inst3 = h3.getInstruction();
+	
+			if (v1 != null && v2 != null && inst3 instanceof ArithmeticInstruction) {
+				Number result = applyArithmetic(v1, v2, (ArithmeticInstruction) inst3);
+				if (result != null) {
+					replaceWithConstant(il, h1, h3, result, cpgen);
+					InstructionHandle after = h3.getNext();
+					if (after != null && after.getInstruction() instanceof StoreInstruction) {
+						StoreInstruction store = (StoreInstruction) after.getInstruction();
+						constants.put(store.getIndex(), result);
+						System.out.println("[DEBUG] New constant assignment after fold: var_" + store.getIndex() + " = " + result);
+					}
 
+					return h3.getNext();
+				}
+			}
+		}
+	
+		return null;
+	}
+	
 
 	private Set<Integer> findReassignedVariables(InstructionList il) {
 		Set<Integer> reassigned = new HashSet<>();
@@ -322,11 +375,28 @@ public class ConstantFolder
 			if (inst instanceof LoadInstruction) {
 				int varIndex = ((LoadInstruction) inst).getIndex();
 	
+				// === ✨ Skip folding if used in conditional or branch logic ===
+				InstructionHandle next = handle.getNext();
+				if (next != null) {
+					Instruction nextInst = next.getInstruction();
+					if (
+						nextInst instanceof IfInstruction ||
+						nextInst instanceof LCMP ||
+						nextInst instanceof FCMPG ||
+						nextInst instanceof FCMPL ||
+						nextInst instanceof DCMPG ||
+						nextInst instanceof DCMPL
+					) {
+						handle = handle.getNext(); // skip folding
+						continue;
+					}
+				}
+	
 				if (constantVars.containsKey(varIndex)) {
 					Number value = constantVars.get(varIndex);
 					Instruction replacement;
 	
-					// Choose appropriate constant push instruction
+					// === Constant selection ===
 					if (value instanceof Integer) {
 						int intVal = value.intValue();
 						if (intVal >= -1 && intVal <= 5) {
@@ -352,8 +422,9 @@ public class ConstantFolder
 	
 					try {
 						InstructionHandle newHandle = il.insert(handle, replacement);
+						redirectTargeters(handle, newHandle);
 						il.delete(handle);
-						handle = newHandle.getNext(); // safely move on
+						handle = newHandle.getNext();
 						System.out.println("[DEBUG] Replaced load of var_" + varIndex + " with constant: " + value);
 					} catch (TargetLostException e) {
 						System.err.println("[ERROR] Target lost while replacing constant load: " + e.getMessage());
@@ -368,11 +439,13 @@ public class ConstantFolder
 		}
 	}
 	
+	
 
 	
 	public void optimize()
 	{
 		ClassGen cgen = new ClassGen(original);
+		cgen.setMajor(50);
 		ConstantPoolGen cpgen = cgen.getConstantPool();
 
 		try {
