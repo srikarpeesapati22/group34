@@ -227,8 +227,28 @@ public class ConstantFolder
 		if (op instanceof IMUL) return v1.intValue() * v2.intValue();
 		if (op instanceof IDIV && v2.intValue() != 0) return v1.intValue() / v2.intValue();
 		if (op instanceof IREM && v2.intValue() != 0) return v1.intValue() % v2.intValue();
-		return null;
+	
+		if (op instanceof LADD) return v1.longValue() + v2.longValue();
+		if (op instanceof LSUB) return v1.longValue() - v2.longValue();
+		if (op instanceof LMUL) return v1.longValue() * v2.longValue();
+		if (op instanceof LDIV && v2.longValue() != 0) return v1.longValue() / v2.longValue();
+		if (op instanceof LREM && v2.longValue() != 0) return v1.longValue() % v2.longValue();
+	
+		if (op instanceof FADD) return v1.floatValue() + v2.floatValue();
+		if (op instanceof FSUB) return v1.floatValue() - v2.floatValue();
+		if (op instanceof FMUL) return v1.floatValue() * v2.floatValue();
+		if (op instanceof FDIV && v2.floatValue() != 0.0f) return v1.floatValue() / v2.floatValue();
+		if (op instanceof FREM && v2.floatValue() != 0.0f) return v1.floatValue() % v2.floatValue();
+	
+		if (op instanceof DADD) return v1.doubleValue() + v2.doubleValue();
+		if (op instanceof DSUB) return v1.doubleValue() - v2.doubleValue();
+		if (op instanceof DMUL) return v1.doubleValue() * v2.doubleValue();
+		if (op instanceof DDIV && v2.doubleValue() != 0.0) return v1.doubleValue() / v2.doubleValue();
+		if (op instanceof DREM && v2.doubleValue() != 0.0) return v1.doubleValue() % v2.doubleValue();
+	
+		return null; // not supported
 	}
+	
 	
 	private InstructionHandle tryFoldExpression(InstructionHandle handle, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
 		if (handle == null || handle.getNext() == null || handle.getNext().getNext() == null)
@@ -241,32 +261,33 @@ public class ConstantFolder
 		Instruction opInstr = h3.getInstruction();
 		if (!(opInstr instanceof ArithmeticInstruction)) return null;
 	
-		Number v1 = getConstantValue(h1, cpgen, constants);
-		Number v2 = getConstantValue(h2, cpgen, constants);
-		Number folded = null;
+		Number result = evaluateRecursive(h3, 0, cpgen, constants);
+		if (result == null) return null;
 	
-		if (v1 != null && v2 != null) {
-			folded = applyArithmetic(v1, v2, (ArithmeticInstruction) opInstr);
-		} else {
-			// Try recursively if one of the values is part of a previous expression
-			folded = evaluateRecursive(h3, 0, cpgen, constants);
-		}
+		System.out.println("[DEBUG] Folding chain starting at " + h1.getPosition() + ": result = " + result);
 	
-		if (folded == null) return null;
+		// Save the next instruction after h3 before deletion
+		InstructionHandle nextAfter = h3.getNext();
 	
-		System.out.println("[DEBUG] Folding expression at " + h1.getPosition() + ": result = " + folded);
-		replaceWithConstant(il, h1, h3, folded, cpgen);
+		// Replace with constant
+		replaceWithConstant(il, h1, h3, result, cpgen);
 	
-		// Track new assignment if followed by a store
-		InstructionHandle after = h3.getNext();
-		if (after != null && after.getInstruction() instanceof StoreInstruction) {
-			StoreInstruction store = (StoreInstruction) after.getInstruction();
-			constants.put(store.getIndex(), folded);
+		// If there's a store right after, assign the folded constant to the variable
+		if (nextAfter != null && nextAfter.getInstruction() instanceof StoreInstruction) {
+			StoreInstruction store = (StoreInstruction) nextAfter.getInstruction();
+			constants.put(store.getIndex(), result);
 			System.out.println("[DEBUG] Assigned folded result to var_" + store.getIndex());
+			nextAfter = nextAfter.getNext(); // skip past store too
 		}
 	
-		return after != null ? after.getNext() : null;
+		il.setPositions(true);
+		return nextAfter; // resume after folded section
 	}
+	
+	
+	
+	
+	
 	
 
 	private Set<Integer> findReassignedVariables(InstructionList il) {
