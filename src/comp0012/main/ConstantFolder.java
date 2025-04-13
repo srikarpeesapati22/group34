@@ -86,18 +86,161 @@ public class ConstantFolder
 				replaceWithConstant(il, handle, handle, value, cpgen);
 			}
 
-			InstructionHandle current = il.getStart();
-			while (current != null) {
-				InstructionHandle next = tryFoldExpression(current, il, cpgen, constantVars);
-				current = (next != null) ? next : current.getNext();
-			}
+			boolean changed;
+			do {
+				changed = false;
+				InstructionHandle current = il.getStart();
+				while (current != null) {
+					InstructionHandle next = tryFoldExpression(current, il, cpgen, constantVars);
+					if (next != null) changed = true;
+					current = (next != null) ? next : current.getNext();
+				}
+				InstructionHandle cur = il.getStart();
+				while (cur != null) {
+					Instruction inst = cur.getInstruction();
+					InstructionHandle next = cur.getNext();
+
+					if (inst instanceof ReturnInstruction && cur.getPrev() != null) {
+						Instruction prev = cur.getPrev().getInstruction();
+						Number value = getConstantValue(prev, cpgen, constantVars);
+						if (value != null) {
+							System.out.println("[DEBUG] Folding final return: " + value);
+							replaceWithConstant(il, cur.getPrev(), cur, value, cpgen);
+							changed = true;
+							break; // restart pass
+						}
+					}
+					cur = next;
+				}
+			} while (changed);
 	
 			// Finalize method and apply
+			il.setPositions(); 
 			mg.setMaxStack();
 			mg.setMaxLocals();
 			cgen.replaceMethod(method, mg.getMethod());
 		}
 	}
+
+
+	private InstructionHandle tryFoldConditionalBoolean(InstructionHandle handle, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
+		Instruction inst1 = handle.getInstruction();
+		InstructionHandle next1 = handle.getNext();
+		if (next1 == null) return null;
+	
+		Instruction inst2 = next1.getInstruction();
+		InstructionHandle next2 = next1.getNext();
+		if (next2 == null) return null;
+	
+		Instruction inst3 = next2.getInstruction();
+	
+		// Match pattern: iload_a, iload_b, if_icmp*
+		if (!(inst3 instanceof IfInstruction)) return null;
+	
+		Number val1 = getConstantValue(inst1, cpgen, constants);
+		Number val2 = getConstantValue(inst2, cpgen, constants);
+		if (val1 == null || val2 == null) return null;
+	
+		boolean result = false;
+		boolean supported = true;
+	
+		if (inst3 instanceof IF_ICMPEQ) result = val1.intValue() == val2.intValue();
+		else if (inst3 instanceof IF_ICMPNE) result = val1.intValue() != val2.intValue();
+		else if (inst3 instanceof IF_ICMPLT) result = val1.intValue() < val2.intValue();
+		else if (inst3 instanceof IF_ICMPLE) result = val1.intValue() <= val2.intValue();
+		else if (inst3 instanceof IF_ICMPGT) result = val1.intValue() > val2.intValue();
+		else if (inst3 instanceof IF_ICMPGE) result = val1.intValue() >= val2.intValue();
+		else supported = false;
+	
+		if (!supported) return null;
+	
+		System.out.println("[DEBUG] Folding boolean condition at " + handle.getPosition() +
+						   ": " + val1 + " " + inst3.getName() + " " + val2 + " = " + result);
+	
+		// Replace the 3 instructions with ICONST_1 or ICONST_0
+		Instruction constInstr = result ? new ICONST(1) : new ICONST(0);
+		try {
+			il.insert(handle, constInstr);
+	
+			// Delete the original comparison block
+			il.delete(handle);
+			il.delete(next1);
+			il.delete(next2);
+	
+			return handle.getNext(); // move to next instruction
+		} catch (TargetLostException e) {
+			System.err.println("[ERROR] Target lost while folding boolean condition: " + e.getMessage());
+			return null;
+		}
+	}
+	
+	private InstructionHandle tryFoldConditionalBooleanReturn(InstructionHandle handle, InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
+		try {
+			InstructionHandle h1 = handle;
+			InstructionHandle h2 = h1.getNext();
+			InstructionHandle h3 = h2 != null ? h2.getNext() : null;
+			InstructionHandle h4 = h3 != null ? h3.getNext() : null;
+			InstructionHandle h5 = h4 != null ? h4.getNext() : null;
+			InstructionHandle h6 = h5 != null ? h5.getNext() : null;
+			InstructionHandle h7 = h6 != null ? h6.getNext() : null;
+	
+			if (h1 == null || h2 == null || h3 == null || h4 == null || h5 == null || h6 == null || h7 == null)
+				return null;
+	
+			Instruction inst1 = h1.getInstruction();
+			Instruction inst2 = h2.getInstruction();
+			Instruction inst3 = h3.getInstruction();
+			Instruction inst4 = h4.getInstruction();
+			Instruction inst5 = h5.getInstruction();
+			Instruction inst6 = h6.getInstruction();
+			Instruction inst7 = h7.getInstruction();
+	
+			// Check types
+			if (!(inst3 instanceof IfInstruction)) return null;
+			if (!(inst4 instanceof ICONST && ((ICONST) inst4).getValue().intValue() == 1)) return null;
+			if (!(inst5 instanceof GOTO)) return null;
+			if (!(inst6 instanceof ICONST && ((ICONST) inst6).getValue().intValue() == 0)) return null;
+			if (!(inst7 instanceof IRETURN)) return null;
+	
+			// Get constants
+			Number val1 = getConstantValue(inst1, cpgen, constants);
+			Number val2 = getConstantValue(inst2, cpgen, constants);
+			if (val1 == null || val2 == null) return null;
+	
+			// Evaluate condition
+			boolean result = false;
+			boolean supported = true;
+			IfInstruction ifInst = (IfInstruction) inst3;
+	
+			if (ifInst instanceof IF_ICMPEQ) result = val1.intValue() == val2.intValue();
+			else if (ifInst instanceof IF_ICMPNE) result = val1.intValue() != val2.intValue();
+			else if (ifInst instanceof IF_ICMPLT) result = val1.intValue() < val2.intValue();
+			else if (ifInst instanceof IF_ICMPLE) result = val1.intValue() <= val2.intValue();
+			else if (ifInst instanceof IF_ICMPGT) result = val1.intValue() > val2.intValue();
+			else if (ifInst instanceof IF_ICMPGE) result = val1.intValue() >= val2.intValue();
+			else supported = false;
+	
+			if (!supported) return null;
+	
+			System.out.println("[DEBUG] Folding if-return block at " + h1.getPosition() + ": " +
+							   val1 + " " + ifInst.getName() + " " + val2 + " => " + result);
+	
+			// Replace the full block with iconst_X and ireturn
+			InstructionHandle inserted = il.insert(h1, result ? new ICONST(1) : new ICONST(0));
+			il.insert(inserted, new IRETURN());
+	
+			// Delete original block
+			il.delete(h1); il.delete(h2); il.delete(h3);
+			il.delete(h4); il.delete(h5); il.delete(h6); il.delete(h7);
+	
+			return inserted.getNext();
+		} catch (TargetLostException e) {
+			System.err.println("[ERROR] Failed to fold if-return block: " + e.getMessage());
+			return null;
+		}
+	}
+	
+
 
 	// Helper to check and track constants assigned to local variables
 	private Map<Integer, Number> findConstantAssignments(InstructionList il, ConstantPoolGen cpgen) {
@@ -209,6 +352,14 @@ public class ConstantFolder
 		if (next2 == null) return null;
 	
 		Instruction inst3 = next2.getInstruction();
+
+		// First, check for a full if-return boolean pattern
+		InstructionHandle folded = tryFoldConditionalBooleanReturn(handle, il, cpgen, constants);
+		if (folded != null) return folded;
+
+		if (inst3 instanceof IfInstruction) {
+			return tryFoldConditionalBoolean(handle, il, cpgen, constants);
+		}
 	
 		Number val1 = null;
 		Number val2 = null;
@@ -248,10 +399,34 @@ public class ConstantFolder
 		// Unsupported or divide by zero
 		if (result == null) return null;
 	
+		int pos = handle.getPosition();
 		System.out.println("[DEBUG] Folding expression at " + handle.getPosition() + ": " +
 				val1 + " " + inst3.getName() + " " + val2 + " = " + result);
 	
 		replaceWithConstant(il, handle, next2, result, cpgen);
+		// After folding and before return
+		InstructionHandle afterFold = next2.getNext();
+		if (afterFold != null && afterFold.getInstruction() instanceof StoreInstruction) {
+			StoreInstruction store = (StoreInstruction) afterFold.getInstruction();
+
+			if (result != null) {
+				constants.put(store.getIndex(), result);
+				System.out.println("[DEBUG] New constant assignment from folded expression: var_" +
+					store.getIndex() + " = " + result);
+			}
+		}
+		// Constant return folding: ldc/sipush/iconst + ireturn
+		if (afterFold != null && afterFold.getInstruction() instanceof ReturnInstruction) {
+			Instruction prev = inst1;
+
+			Number value = getConstantValue(prev, cpgen, constants);
+			if (value != null) {
+				System.out.println("[DEBUG] Folding return constant: " + value);
+				replaceWithConstant(il, handle, afterFold, value, cpgen);
+				return afterFold.getNext();
+			}
+		}
+
 		return next2.getNext();
 	}
 	
@@ -305,7 +480,8 @@ public class ConstantFolder
 				current = next;
 			}
 			il.delete(to); // delete last one
-	
+			fromPos = from.getPosition();
+			toPos = to.getPosition();
 			System.out.println("[DEBUG] Replaced instructions from " + fromPos + " to " + toPos + " with constant: " + value);
 		} catch (TargetLostException e) {
 			System.err.println("[ERROR] Target lost while replacing instructions: " + e.getMessage());
