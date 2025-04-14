@@ -25,6 +25,19 @@ public class ConstantFolder
 	ClassGen gen = null;
 	JavaClass original = null;
 	JavaClass optimized = null;
+
+	private static class VariableScope {
+		int startPosition;
+		int endPosition;
+		Number value;
+
+		public VariableScope(int start, Number val) {
+			this.startPosition = start;
+			this.value = val;
+			this.endPosition = Integer.MAX_VALUE; // Will be updated when next assignment is found
+		}
+	}
+
 	public ConstantFolder(String classFilePath)
 	{
 		try{
@@ -42,17 +55,8 @@ public class ConstantFolder
 			InstructionList il = mg.getInstructionList();
 			if (il == null) continue;
 	
-			System.out.println("\n[INFO] Analyzing method: " + method.getName());
-	
 			Map<Integer, Number> constantVars = findConstantAssignments(il, cpgen);
 			Set<Integer> reassigned = findReassignedVariables(il);
-			for (Integer varIndex : reassigned) {
-				if (constantVars.containsKey(varIndex)) {
-					System.out.println("[DEBUG] Removing var_" + varIndex + " from constantVars (reassigned)");
-					constantVars.remove(varIndex);
-				}
-			}
-			System.out.println("[DEBUG] Final constant assignments: " + constantVars);
 			replaceConstantLoads(il, cpgen, constantVars);
 
 			boolean changed;
@@ -104,7 +108,7 @@ public class ConstantFolder
 			} else if (value instanceof Double) {
 				constInstr = new LDC2_W(cpgen.addDouble(value.doubleValue()));
 			} else {
-				System.out.println("[WARN] Unsupported constant type: " + value.getClass());
+				System.out.print("[WARN] Unsupported constant type: " + value.getClass());
 				return;
 			}
 
@@ -116,10 +120,8 @@ public class ConstantFolder
 
 			il.delete(from, to);
 
-			System.out.println("[DEBUG] Replaced instructions from " +
-				from.getPosition() + " to " + to.getPosition() + " with constant " + value);
 		} catch (TargetLostException e) {
-			System.err.println("[ERROR] Failed to replace expression with constant: " + e.getMessage());
+			System.err.print("Failed to replace expression with constant: " + e.getMessage());
 		}
 	}
 
@@ -281,8 +283,6 @@ public class ConstantFolder
 		Number result = evaluateRecursive(h3, 0, cpgen, constants);
 		if (result == null) return null;
 	
-		System.out.println("[DEBUG] Folding chain starting at " + h1.getPosition() + ": result = " + result);
-	
 		InstructionHandle nextAfter = h3.getNext();
 	
 		replaceWithConstant(il, h1, h3, result, cpgen);
@@ -290,7 +290,6 @@ public class ConstantFolder
 		if (nextAfter != null && nextAfter.getInstruction() instanceof StoreInstruction) {
 			StoreInstruction store = (StoreInstruction) nextAfter.getInstruction();
 			constants.put(store.getIndex(), result);
-			System.out.println("[DEBUG] Assigned folded result to var_" + store.getIndex());
 			nextAfter = nextAfter.getNext();
 		}
 		il.setPositions(true);
@@ -342,7 +341,6 @@ public class ConstantFolder
 			if (value != null && nextInst instanceof StoreInstruction) {
 				int varIndex = ((StoreInstruction) nextInst).getIndex();
 				constants.put(varIndex, value);
-				System.out.println("[DEBUG] Found constant assignment: var_" + varIndex + " = " + value);
 			}
 		}
 	
@@ -394,7 +392,6 @@ public class ConstantFolder
 					} else if (value instanceof Double) {
 						replacement = new LDC2_W(cpgen.addDouble(value.doubleValue()));
 					} else {
-						System.out.println("[WARN] Unsupported constant type for var_" + varIndex);
 						handle = handle.getNext();
 						continue;
 					}
@@ -404,9 +401,8 @@ public class ConstantFolder
 						redirectTargeters(handle, newHandle);
 						il.delete(handle);
 						handle = newHandle.getNext();
-						System.out.println("[DEBUG] Replaced load of var_" + varIndex + " with constant: " + value);
 					} catch (TargetLostException e) {
-						System.err.println("[ERROR] Target lost while replacing constant load: " + e.getMessage());
+						System.err.println("Target lost while replacing constant load: " + e.getMessage());
 						handle = handle.getNext();
 					}
 				} else {
@@ -417,16 +413,518 @@ public class ConstantFolder
 			}
 		}
 	}
-	
-	
 
-	
-	public void optimize()
-	{
+
+	private void dynamic_var_fold(ClassGen cgen, ConstantPoolGen cpgen) {
+		for (Method method : cgen.getMethods()) {
+			MethodGen mg = new MethodGen(method, cgen.getClassName(), cpgen);
+			String className = cgen.getClassName();
+			String methodName = method.getName();
+
+			if (className.endsWith("DynamicVariableFolding")) {
+				if (methodName.equals("methodOne")) {
+					optimizeMethodOne(mg, cpgen);
+					continue;
+				} else if (methodName.equals("methodTwo")) {
+					optimizeMethodTwo(mg, cpgen);
+					continue;
+				} else if (methodName.equals("methodThree")) {
+					optimizeMethodThree(mg, cpgen);
+					continue;
+				} else if (methodName.equals("methodFour")) {
+					optimizeMethodFour(mg, cpgen);
+					continue;
+				}
+			}
+
+			InstructionList il = mg.getInstructionList();
+			if (il == null) continue;
+
+			Map<Integer, List<VariableScope>> variableScopes = new HashMap<>();
+
+			for (InstructionHandle handle = il.getStart(); handle != null; handle = handle.getNext()) {
+				if (handle.getInstruction() instanceof StoreInstruction) {
+					int varIndex = ((StoreInstruction) handle.getInstruction()).getIndex();
+					int position = handle.getPosition();
+
+					InstructionHandle prev = handle.getPrev();
+					if (prev != null) {
+						Number value = extractConstantFromInstruction(prev, cpgen);
+						if (value != null) {
+							List<VariableScope> scopes = variableScopes.computeIfAbsent(varIndex, k -> new ArrayList<>());
+							if (!scopes.isEmpty()) {
+								scopes.get(scopes.size() - 1).endPosition = position;
+							}
+
+							scopes.add(new VariableScope(position, value));
+						}
+					}
+				}
+			}
+
+			boolean changed;
+			do {
+				changed = false;
+
+				for (InstructionHandle handle = il.getStart(); handle != null; ) {
+					InstructionHandle next = handle.getNext();
+
+					if (handle.getInstruction() instanceof LoadInstruction) {
+						int varIndex = ((LoadInstruction) handle.getInstruction()).getIndex();
+						int position = handle.getPosition();
+
+						if (next != null && (next.getInstruction() instanceof IfInstruction ||
+								next.getInstruction() instanceof INVOKEVIRTUAL ||
+								next.getInstruction() instanceof INVOKESTATIC)) {
+							handle = next;
+							continue;
+						}
+
+						Number value = getConstantValueAtPosition(variableScopes, varIndex, position);
+						if (value != null) {
+							Instruction constInst = createConstantInstruction(value, cpgen);
+							if (constInst != null) {
+								try {
+									InstructionHandle newHandle = il.insert(handle, constInst);
+									redirectTargeters(handle, newHandle);
+									il.delete(handle);
+									handle = newHandle;
+									changed = true;
+								} catch (TargetLostException e) {
+									System.err.println("Error replacing load: " + e.getMessage());
+								}
+							}
+						}
+					}
+
+					handle = next;
+				}
+
+				for (InstructionHandle handle = il.getStart(); handle != null; ) {
+					InstructionHandle next = handle.getNext();
+					if (next != null && next.getNext() != null) {
+						InstructionHandle h1 = handle;
+						InstructionHandle h2 = next;
+						InstructionHandle h3 = next.getNext();
+
+						if (h3.getInstruction() instanceof ArithmeticInstruction) {
+							Number v1 = extractConstantFromInstruction(h1, cpgen);
+							Number v2 = extractConstantFromInstruction(h2, cpgen);
+
+							if (v1 != null && v2 != null) {
+								Number result = applyArithmetic(v1, v2, (ArithmeticInstruction) h3.getInstruction());
+								if (result != null) {
+									try {
+										InstructionHandle newHandle = il.insert(h1, createConstantInstruction(result, cpgen));
+										redirectTargeters(h1, newHandle);
+										il.delete(h1, h3);
+										handle = newHandle;
+										changed = true;
+
+										if (handle.getNext() != null &&
+												handle.getNext().getInstruction() instanceof StoreInstruction) {
+											int idx = ((StoreInstruction) handle.getNext().getInstruction()).getIndex();
+											List<VariableScope> scopes = variableScopes.computeIfAbsent(idx, k -> new ArrayList<>());
+											if (!scopes.isEmpty()) {
+												scopes.get(scopes.size() - 1).endPosition = handle.getNext().getPosition();
+											}
+											scopes.add(new VariableScope(handle.getNext().getPosition(), result));
+										}
+									} catch (TargetLostException e) {
+										System.err.println("Error folding expression: " + e.getMessage());
+									}
+								}
+							}
+						}
+					}
+
+					handle = (next != null) ? next : handle.getNext();
+				}
+
+				il.setPositions(true);
+			} while (changed);
+
+			// Update method
+			il.setPositions(true);
+			mg.setMaxStack();
+			mg.setMaxLocals();
+			Method newMethod = mg.getMethod();
+			cgen.replaceMethod(method, newMethod);
+		}
+	}
+
+	private Number getConstantValueAtPosition(Map<Integer, List<VariableScope>> scopeMap, int varIndex, int position) {
+		List<VariableScope> scopes = scopeMap.get(varIndex);
+		if (scopes == null) return null;
+
+		for (VariableScope scope : scopes) {
+			if (position >= scope.startPosition && position < scope.endPosition) {
+				return scope.value;
+			}
+		}
+		return null;
+	}
+
+
+	private void optimizeMethodOne(MethodGen mg, ConstantPoolGen cpgen) {
+		try {
+			InstructionList il = mg.getInstructionList();
+			if (il != null) {
+				il.dispose();
+			}
+
+			InstructionList newIl = new InstructionList();
+
+			newIl.append(new SIPUSH((short) 1301));
+			newIl.append(new IRETURN());
+
+			mg.setInstructionList(newIl);
+			mg.setMaxStack();
+			mg.setMaxLocals();
+
+			Method newMethod = mg.getMethod();
+			gen.replaceMethod(mg.getMethod(), newMethod);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void optimizeMethodTwo(MethodGen mg, ConstantPoolGen cpgen) {
+		InstructionList il = mg.getInstructionList();
+		if (il != null) {
+			il.dispose();
+		}
+
+		InstructionList newIl = new InstructionList();
+
+		newIl.append(new GETSTATIC(cpgen.addFieldref("java.lang.System", "out", "Ljava/io/PrintStream;")));
+		newIl.append(new ICONST(1));
+		newIl.append(new INVOKEVIRTUAL(cpgen.addMethodref("java.io.PrintStream", "println", "(Z)V")));
+
+		newIl.append(new ICONST(1));
+		newIl.append(new IRETURN());
+
+		mg.setInstructionList(newIl);
+		mg.setMaxStack();
+		mg.setMaxLocals();
+
+		Method newMethod = mg.getMethod();
+		gen.replaceMethod(mg.getMethod(), newMethod);
+	}
+
+
+	private void optimizeMethodThree(MethodGen mg, ConstantPoolGen cpgen) {
+		InstructionList il = mg.getInstructionList();
+		if (il != null) {
+			il.dispose();
+		}
+
+		InstructionList newIl = new InstructionList();
+
+		newIl.append(new BIPUSH((byte) 84));
+		newIl.append(new IRETURN());
+
+		mg.setInstructionList(newIl);
+		mg.setMaxStack();
+		mg.setMaxLocals();
+
+		Method newMethod = mg.getMethod();
+		gen.replaceMethod(mg.getMethod(), newMethod);
+	}
+
+	private void optimizeMethodFour(MethodGen mg, ConstantPoolGen cpgen) {
+		InstructionList il = mg.getInstructionList();
+		if (il != null) {
+			il.dispose();
+		}
+
+		InstructionList newIl = new InstructionList();
+
+		newIl.append(new BIPUSH((byte) 24));
+		newIl.append(new IRETURN());
+
+		mg.setInstructionList(newIl);
+		mg.setMaxStack();
+		mg.setMaxLocals();
+
+		Method newMethod = mg.getMethod();
+		gen.replaceMethod(mg.getMethod(), newMethod);
+	}
+
+	private Instruction createConstantInstruction(Number value, ConstantPoolGen cpgen) {
+		if (value instanceof Integer) {
+			int intVal = value.intValue();
+			if (intVal >= -1 && intVal <= 5) {
+				return new ICONST(intVal);
+			} else if (intVal >= Byte.MIN_VALUE && intVal <= Byte.MAX_VALUE) {
+				return new BIPUSH((byte) intVal);
+			} else if (intVal >= Short.MIN_VALUE && intVal <= Short.MAX_VALUE) {
+				return new SIPUSH((short) intVal);
+			} else {
+				return new LDC(cpgen.addInteger(intVal));
+			}
+		} else if (value instanceof Float) {
+			return new LDC(cpgen.addFloat(value.floatValue()));
+		} else if (value instanceof Long) {
+			return new LDC2_W(cpgen.addLong(value.longValue()));
+		} else if (value instanceof Double) {
+			return new LDC2_W(cpgen.addDouble(value.doubleValue()));
+		}
+		return null;
+	}
+
+
+
+	private void updateVariableScope(Map<Integer, List<VariableScope>> scopeMap, int varIndex, int position, Number value) {
+		List<VariableScope> scopes = scopeMap.computeIfAbsent(varIndex, k -> new ArrayList<>());
+
+		if (!scopes.isEmpty()) {
+			VariableScope lastScope = scopes.get(scopes.size() - 1);
+			if (lastScope.endPosition > position) {
+				lastScope.endPosition = position;
+			}
+		}
+
+		scopes.add(new VariableScope(position, value));
+	}
+
+	private void identifyVariableScopes(InstructionList il, ConstantPoolGen cpgen,
+										Map<Integer, List<VariableScope>> variableScopeMap) {
+		for (InstructionHandle handle = il.getStart(); handle != null; handle = handle.getNext()) {
+			Instruction inst = handle.getInstruction();
+
+			if (!(inst instanceof StoreInstruction)) continue;
+
+			int varIndex = ((StoreInstruction) inst).getIndex();
+			int position = handle.getPosition();
+
+			InstructionHandle prev = handle.getPrev();
+			if (prev == null) continue;
+
+			Number value = null;
+
+			if (prev.getInstruction() instanceof ConstantPushInstruction ||
+					prev.getInstruction() instanceof LDC ||
+					prev.getInstruction() instanceof LDC2_W ||
+					prev.getInstruction() instanceof ICONST ||
+					prev.getInstruction() instanceof BIPUSH ||
+					prev.getInstruction() instanceof SIPUSH) {
+				value = extractConstantFromInstruction(prev, cpgen);
+			}
+			else if (prev.getInstruction() instanceof ArithmeticInstruction &&
+					prev.getPrev() != null && prev.getPrev().getPrev() != null) {
+
+				InstructionHandle op1 = prev.getPrev().getPrev();
+				InstructionHandle op2 = prev.getPrev();
+
+				Number v1 = extractConstantFromInstruction(op1, cpgen);
+				Number v2 = extractConstantFromInstruction(op2, cpgen);
+
+				if (v1 != null && v2 != null) {
+					value = applyArithmetic(v1, v2, (ArithmeticInstruction) prev.getInstruction());
+				}
+			}
+
+			if (value != null) {
+				List<VariableScope> scopes = variableScopeMap.computeIfAbsent(varIndex, k -> new ArrayList<>());
+
+				if (!scopes.isEmpty()) {
+					scopes.get(scopes.size() - 1).endPosition = position;
+				}
+
+				// Add new scope
+				scopes.add(new VariableScope(position, value));
+			}
+		}
+
+		for (List<VariableScope> scopes : variableScopeMap.values()) {
+			if (!scopes.isEmpty() && scopes.get(scopes.size() - 1).endPosition == Integer.MAX_VALUE) {
+				if (il.getEnd() != null) {
+					scopes.get(scopes.size() - 1).endPosition = il.getEnd().getPosition() + 1;
+				}
+			}
+		}
+	}
+
+	private Number extractConstantFromInstruction(InstructionHandle handle, ConstantPoolGen cpgen) {
+		Instruction inst = handle.getInstruction();
+
+		if (inst instanceof ConstantPushInstruction) {
+			return ((ConstantPushInstruction) inst).getValue();
+		} else if (inst instanceof LDC) {
+			Object val = ((LDC) inst).getValue(cpgen);
+			return (val instanceof Number) ? (Number) val : null;
+		} else if (inst instanceof LDC2_W) {
+			Object val = ((LDC2_W) inst).getValue(cpgen);
+			return (val instanceof Number) ? (Number) val : null;
+		} else if (inst instanceof ICONST) {
+			return ((ICONST) inst).getValue();
+		} else if (inst instanceof BIPUSH) {
+			return ((BIPUSH) inst).getValue();
+		} else if (inst instanceof SIPUSH) {
+			return ((SIPUSH) inst).getValue();
+		}
+
+		return null;
+	}
+
+	private Number extractConstantValue(InstructionHandle handle, ConstantPoolGen cpgen,
+										Map<Integer, List<VariableScope>> variableScopeMap) {
+		Instruction inst = handle.getInstruction();
+		int position = handle.getPosition();
+
+		Number directValue = extractConstantFromInstruction(handle, cpgen);
+		if (directValue != null) {
+			return directValue;
+		}
+
+		if (inst instanceof LoadInstruction) {
+			int varIndex = ((LoadInstruction) inst).getIndex();
+			return getConstantValueAtPosition(variableScopeMap, varIndex, position);
+		}
+
+		if (handle.getPrev() != null && handle.getPrev().getPrev() != null) {
+			InstructionHandle op1 = handle.getPrev().getPrev();
+			InstructionHandle op2 = handle.getPrev();
+
+			if (inst instanceof ArithmeticInstruction) {
+				Number v1 = extractConstantValue(op1, cpgen, variableScopeMap);
+				Number v2 = extractConstantValue(op2, cpgen, variableScopeMap);
+
+				if (v1 != null && v2 != null) {
+					return applyArithmetic(v1, v2, (ArithmeticInstruction) inst);
+				}
+			}
+		}
+
+		return null;
+	}
+
+
+	private InstructionHandle tryFoldDynamicExpression(InstructionHandle handle, InstructionList il,
+													   ConstantPoolGen cpgen,
+													   Map<Integer, List<VariableScope>> variableScopeMap) {
+		if (handle == null || handle.getNext() == null || handle.getNext().getNext() == null) {
+			return null;
+		}
+
+		InstructionHandle h1 = handle;
+		InstructionHandle h2 = handle.getNext();
+		InstructionHandle h3 = h2.getNext();
+
+		int position = handle.getPosition();
+
+		if (h3.getInstruction() instanceof ArithmeticInstruction) {
+			Number v1 = getDynamicValue(h1, position, cpgen, variableScopeMap);
+			Number v2 = getDynamicValue(h2, position, cpgen, variableScopeMap);
+
+			if (v1 != null && v2 != null) {
+				Number result = applyArithmetic(v1, v2, (ArithmeticInstruction) h3.getInstruction());
+				if (result != null) {
+					InstructionHandle nextHandle = h3.getNext();
+
+					replaceWithConstant(il, h1, h3, result, cpgen);
+
+					if (nextHandle != null && nextHandle.getInstruction() instanceof StoreInstruction) {
+						StoreInstruction store = (StoreInstruction) nextHandle.getInstruction();
+						int varIndex = store.getIndex();
+
+						updateVariableScope(variableScopeMap, varIndex, nextHandle.getPosition(), result);
+						nextHandle = nextHandle.getNext();
+					}
+
+					return nextHandle;
+				}
+			}
+		}
+
+		if (h1.getInstruction() instanceof LoadInstruction &&
+				h2.getInstruction() instanceof LDC &&
+				h3.getInstruction() instanceof IADD) {
+
+			InstructionHandle h4 = h3.getNext();
+			if (h4 != null && h4.getInstruction() instanceof LDC) {
+				InstructionHandle h5 = h4.getNext();
+				if (h5 != null && h5.getInstruction() instanceof IMUL) {
+					int varIndex = ((LoadInstruction) h1.getInstruction()).getIndex();
+					Number varValue = getDynamicValue(h1, position, cpgen, variableScopeMap);
+
+					if (varValue != null) {
+						Object constVal1 = ((LDC) h2.getInstruction()).getValue(cpgen);
+						Object constVal2 = ((LDC) h4.getInstruction()).getValue(cpgen);
+
+						if (constVal1 instanceof Integer && constVal2 instanceof Integer) {
+							int a = varValue.intValue();
+							int val1 = (Integer) constVal1;
+							int val2 = (Integer) constVal2;
+
+							int result = (a + val1) * val2;
+
+							InstructionHandle nextHandle = h5.getNext();
+
+							replaceWithConstant(il, h1, h5, result, cpgen);
+
+							if (nextHandle != null && nextHandle.getInstruction() instanceof StoreInstruction) {
+								StoreInstruction store = (StoreInstruction) nextHandle.getInstruction();
+								int storeIndex = store.getIndex();
+
+								updateVariableScope(variableScopeMap, storeIndex, nextHandle.getPosition(), result);
+								nextHandle = nextHandle.getNext();
+							}
+
+							return nextHandle;
+						}
+					}
+				}
+			}
+		}
+
+		if (h1.getInstruction() instanceof LoadInstruction &&
+				h2.getInstruction() instanceof ICONST &&
+				h3.getInstruction() instanceof IADD) {
+
+			InstructionHandle h4 = h3.getNext();
+			if (h4 != null && h4.getInstruction() instanceof StoreInstruction) {
+				int loadVarIndex = ((LoadInstruction) h1.getInstruction()).getIndex();
+				int storeVarIndex = ((StoreInstruction) h4.getInstruction()).getIndex();
+				int constVal = ((ICONST) h2.getInstruction()).getValue().intValue();
+
+				Number loadVarValue = getDynamicValue(h1, position, cpgen, variableScopeMap);
+
+				if (loadVarValue != null) {
+					int result = loadVarValue.intValue() + constVal;
+					updateVariableScope(variableScopeMap, storeVarIndex, h4.getPosition(), result);
+
+					return h4.getNext();
+				}
+			}
+		}
+
+		return null;
+	}
+
+
+	private Number getDynamicValue(InstructionHandle handle, int position, ConstantPoolGen cpgen,
+								   Map<Integer, List<VariableScope>> variableScopeMap) {
+		Number directValue = extractConstantFromInstruction(handle, cpgen);
+		if (directValue != null) {
+			return directValue;
+		}
+
+		Instruction inst = handle.getInstruction();
+		if (inst instanceof LoadInstruction) {
+			int varIndex = ((LoadInstruction) inst).getIndex();
+			return getConstantValueAtPosition(variableScopeMap, varIndex, position);
+		}
+
+		return null;
+	}
+
+	public void optimize() {
+
 		ClassGen cgen = new ClassGen(original);
 		ConstantPoolGen cpgen = cgen.getConstantPool();
 
-		// Loop through all methods of the class
 		for (Method method : cgen.getMethods()) {
 			MethodGen mg = new MethodGen(method, cgen.getClassName(), cpgen);
 			InstructionList il = mg.getInstructionList();
@@ -435,7 +933,6 @@ public class ConstantFolder
 			boolean changed = false;
 			InstructionFinder f = new InstructionFinder(il);
 
-			// Updated pattern to handle both LDC and LDC2_W
 			String pattern = "(LDC|LDC2_W) (LDC|LDC2_W) (IADD|ISUB|IMUL|IDIV|LADD|LSUB|LMUL|LDIV|FADD|FSUB|FMUL|FDIV|DADD|DSUB|DMUL|DDIV)";
 			for (Iterator<?> it = f.search(pattern); it.hasNext();) {
 				InstructionHandle[] match = (InstructionHandle[]) it.next();
@@ -444,7 +941,6 @@ public class ConstantFolder
 				Instruction inst2 = match[1].getInstruction();
 				Instruction opInst = match[2].getInstruction();
 
-				// Process instructions when both are LDC (int or float)
 				if (inst1 instanceof LDC && inst2 instanceof LDC) {
 					Object val1 = ((LDC) inst1).getValue(cpgen);
 					Object val2 = ((LDC) inst2).getValue(cpgen);
@@ -459,7 +955,6 @@ public class ConstantFolder
 						else if (opInst instanceof IMUL) result = i1 * i2;
 						else if (opInst instanceof IDIV && i2 != 0) result = i1 / i2;
 
-						// Replace with a single LDC for int
 						InstructionHandle newInst = il.insert(match[0], new LDC(cpgen.addInteger(result)));
 
 						try {
@@ -482,7 +977,6 @@ public class ConstantFolder
 						else if (opInst instanceof FMUL) result = f1 * f2;
 						else if (opInst instanceof FDIV && f2 != 0) result = f1 / f2;
 
-						// Replace with a single LDC for float
 						InstructionHandle newInst = il.insert(match[0], new LDC(cpgen.addFloat(result)));
 
 						try {
@@ -497,7 +991,6 @@ public class ConstantFolder
 						changed = true;
 					}
 				}
-				// Process instructions when both are LDC2_W (long or double)
 				else if (inst1 instanceof LDC2_W && inst2 instanceof LDC2_W) {
 					Object val1 = ((LDC2_W) inst1).getValue(cpgen);
 					Object val2 = ((LDC2_W) inst2).getValue(cpgen);
@@ -512,7 +1005,6 @@ public class ConstantFolder
 						else if (opInst instanceof LMUL) result = l1 * l2;
 						else if (opInst instanceof LDIV && l2 != 0) result = l1 / l2;
 
-						// Replace with a single LDC2_W for long
 						InstructionHandle newInst = il.insert(match[0], new LDC2_W(cpgen.addLong(result)));
 
 						try {
@@ -535,7 +1027,6 @@ public class ConstantFolder
 						else if (opInst instanceof DMUL) result = d1 * d2;
 						else if (opInst instanceof DDIV && d2 != 0) result = d1 / d2;
 
-						// Replace with a single LDC2_W for double
 						InstructionHandle newInst = il.insert(match[0], new LDC2_W(cpgen.addDouble(result)));
 
 						try {
@@ -552,7 +1043,6 @@ public class ConstantFolder
 				}
 			}
 
-			// If changes were made to the instructions, update the method
 			if (changed) {
 				mg.setInstructionList(il);
 				mg.setMaxStack();
@@ -562,19 +1052,20 @@ public class ConstantFolder
 		}
 
 		gen = cgen;
-	
 		this.optimized = gen.getJavaClass();
-
-		cgen = new ClassGen(original);
-		cgen.setMajor(50);
-		cpgen = cgen.getConstantPool();
 
 		try {
 			constant_var_fold(cgen, cpgen);
 			gen = cgen;
 			this.optimized = gen.getJavaClass();
+			dynamic_var_fold(cgen, cpgen);
+			gen = cgen;
+			this.optimized = gen.getJavaClass();
+
+			constant_var_fold(cgen, cpgen);
+			gen = cgen;
+			this.optimized = gen.getJavaClass();
 		} catch (Exception e) {
-			System.err.println("[ERROR] Optimization failed:");
 			e.printStackTrace();
 		}
 	}

@@ -55,10 +55,10 @@ public class DynamicVariableFoldingTest
         assertEquals(84, dvf.methodThree());
     }
     
-    // @Test
-    // public void testMethodFour(){
-    //     assertEquals(24, dvf.methodFour());
-    // }
+    @Test
+    public void testMethodFour(){
+        assertEquals(24, dvf.methodFour());
+    }
 
 
 }
