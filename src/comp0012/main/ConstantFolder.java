@@ -205,6 +205,7 @@ public class ConstantFolder
 		return null;
 	}
 
+
 	private Number evaluateRecursive(InstructionHandle start, int depth, ConstantPoolGen cpgen, Map<Integer, Number> constants) {
 		Instruction inst = start.getInstruction();
 
@@ -260,6 +261,7 @@ public class ConstantFolder
 		}
 		return left;
 	}
+
 
 	private Number applyArithmetic(Number v1, Number v2, ArithmeticInstruction op) {
 		try {
@@ -320,6 +322,7 @@ public class ConstantFolder
 		return nextAfter;
 	}
 
+
 	private Set<Integer> findReassignedVariables(InstructionList il) {
 		Set<Integer> reassigned = new HashSet<>();
 		Map<Integer, Boolean> seenOnce = new HashMap<>();
@@ -339,6 +342,7 @@ public class ConstantFolder
 		}
 		return reassigned;
 	}
+
 
 	private Map<Integer, Number> findConstantAssignments(InstructionList il, ConstantPoolGen cpgen) {
 		Map<Integer, Number> constants = new HashMap<>();
@@ -375,6 +379,7 @@ public class ConstantFolder
 
 		return constants;
 	}
+
 
 	private void replaceConstantLoads(InstructionList il, ConstantPoolGen cpgen, Map<Integer, Number> constantVars) {
 		for (InstructionHandle handle = il.getStart(); handle != null; ) {
@@ -442,7 +447,7 @@ public class ConstantFolder
 	}
 
 
-	// Track variable assignments and their values/dependencies
+	// Track variable assignments and their values
 	private void trackVariableAssignments(InstructionList il, ConstantPoolGen cpgen,
 										  Map<Integer, List<VariableState>> variableStates) {
 		il.setPositions(true);
@@ -501,14 +506,7 @@ public class ConstantFolder
 					}
 				}
 			}
-			// Handle arithmetic operations
 			else if (prev.getInstruction() instanceof ArithmeticInstruction) {
-				// In bytecode, the lower stack value is pushed first.
-				// For an operation like "b - 67":
-				//    op2Handle (earlier instruction) pushes b
-				//    op1Handle (later instruction) pushes 67
-				// Hence, we need:
-				//    first operand = value from op2Handle, second operand = value from op1Handle.
 				InstructionHandle op1Handle = prev.getPrev();
 				InstructionHandle op2Handle = (op1Handle != null) ? op1Handle.getPrev() : null;
 
@@ -518,7 +516,6 @@ public class ConstantFolder
 					Set<Integer> deps_first = new HashSet<>();
 					Set<Integer> deps_second = new HashSet<>();
 
-					// Process the first operand from op2Handle
 					if (op2Handle.getInstruction() instanceof LoadInstruction) {
 						int idx = ((LoadInstruction) op2Handle.getInstruction()).getIndex();
 						deps_first.add(idx);
@@ -546,7 +543,6 @@ public class ConstantFolder
 						if (val instanceof Number) v_first = (Number) val;
 					}
 
-					// Process the second operand from op1Handle
 					if (op1Handle.getInstruction() instanceof LoadInstruction) {
 						int idx = ((LoadInstruction) op1Handle.getInstruction()).getIndex();
 						deps_second.add(idx);
@@ -583,13 +579,12 @@ public class ConstantFolder
 				}
 			}
 
-			// Add the variable state with all dependencies
 			List<VariableState> states = variableStates.computeIfAbsent(varIndex, k -> new ArrayList<>());
 			states.add(new VariableState(position, value, dependencies));
 		}
 	}
 
-	// Improved method to replace variable loads with constants
+
 	private boolean replaceVariableLoadsWithDynamicConstants(InstructionList il, ConstantPoolGen cpgen,
 															 Map<Integer, List<VariableState>> variableStates) {
 		boolean changed = false;
@@ -609,24 +604,17 @@ public class ConstantFolder
 				if (prev2 != null) skipInstructions.add(prev2);
 			}
 		}
-
-		// Now process variable loads
 		for (InstructionHandle handle = il.getStart(); handle != null;) {
 			InstructionHandle nextHandle = handle.getNext();
-
-			// Skip instructions marked earlier
 			if (skipInstructions.contains(handle)) {
 				handle = nextHandle;
 				continue;
 			}
-
 			Instruction inst = handle.getInstruction();
 
 			if (inst instanceof LoadInstruction) {
 				int varIndex = ((LoadInstruction) inst).getIndex();
 				int position = handle.getPosition();
-
-				// Skip if next instruction is comparison/branch
 				if (nextHandle != null) {
 					Instruction nextInst = nextHandle.getInstruction();
 					if (nextInst instanceof IfInstruction ||
@@ -639,8 +627,6 @@ public class ConstantFolder
 						continue;
 					}
 				}
-
-				// Find the most recent state for this variable
 				List<VariableState> states = variableStates.get(varIndex);
 				if (states != null && !states.isEmpty()) {
 					VariableState mostRecent = null;
@@ -680,14 +666,12 @@ public class ConstantFolder
 					}
 				}
 			}
-
 			handle = nextHandle;
 		}
-
 		return changed;
 	}
 
-	// Helper method to check if an instruction is part of a method call
+
 	private boolean isInMethodCall(InstructionHandle handle, ConstantPoolGen cpgen) {
 		Instruction inst = handle.getInstruction();
 
@@ -695,7 +679,6 @@ public class ConstantFolder
 	}
 
 
-	// Helper method to calculate arithmetic result
 	private Number calculateArithmeticResult(Number v1, Number v2, ArithmeticInstruction inst) {
 		try {
 			if (inst instanceof IADD) return v1.intValue() + v2.intValue();
@@ -730,77 +713,37 @@ public class ConstantFolder
 			InstructionList il = mg.getInstructionList();
 			if (il == null) continue;
 
-			// Add debugging for methodOne
-			boolean isMethodOne = method.getName().equals("methodOne");
-			if (isMethodOne) {
-				System.out.println("DEBUG: Processing methodOne");
-			}
-
-			// Skip optimizing methods with System.out.println to prevent OutOfMemoryError
 			if (containsPrintStatements(il, cpgen)) {
-				// Only do basic constant folding for methods with print statements
-				if (isMethodOne) System.out.println("DEBUG: methodOne has print statements? This shouldn't happen.");
-
-				// Rest of your code...
 				continue;
 			}
 
-			// For other methods, apply full dynamic variable folding
 			Map<Integer, List<VariableState>> variableStates = new HashMap<>();
-
-			// First track all assignments
 			trackVariableAssignments(il, cpgen, variableStates);
 
-			// Debug print variable states
-			if (isMethodOne) {
-				System.out.println("DEBUG: Initial variable states in methodOne:");
-				debugPrintVariableStates(variableStates);
-			}
-
-			// Then try to fold expressions
 			boolean changed;
-			int maxPasses = 5; // Limit the number of optimization passes
+			int maxPasses = 5;
 			int pass = 0;
 
 			do {
-				if (isMethodOne) System.out.println("DEBUG: Starting pass " + pass + " for methodOne");
-
 				changed = false;
 
-				// Replace variable loads with constants
 				if (replaceVariableLoadsWithDynamicConstants(il, cpgen, variableStates)) {
 					changed = true;
-					if (isMethodOne) System.out.println("DEBUG: Variable loads were replaced in methodOne");
 				}
 
-				// Fold expressions
 				if (foldDynamicExpressions(il, cpgen, variableStates)) {
 					changed = true;
-					if (isMethodOne) System.out.println("DEBUG: Expressions were folded in methodOne");
 				}
 
-				// Recalculate variable state after changes
 				if (changed) {
 					variableStates.clear();
 					trackVariableAssignments(il, cpgen, variableStates);
 					il.setPositions(true);
-
-					if (isMethodOne) {
-						System.out.println("DEBUG: Updated variable states after pass " + pass + ":");
-						debugPrintVariableStates(variableStates);
-					}
 				}
 
 				pass++;
 			} while (changed && pass < maxPasses);
 
-			// Final debug for methodOne
-			if (isMethodOne) {
-				System.out.println("DEBUG: Final instructions in methodOne:");
-				debugPrintInstructions(il);
-			}
-
-			// Final cleanup
 			il.setPositions(true);
 			mg.setMaxStack();
 			mg.setMaxLocals();
@@ -809,29 +752,6 @@ public class ConstantFolder
 			cgen.replaceMethod(method, newMethod);
 		}
 	}
-
-	private void debugPrintVariableStates(Map<Integer, List<VariableState>> variableStates) {
-		for (Map.Entry<Integer, List<VariableState>> entry : variableStates.entrySet()) {
-			int varIndex = entry.getKey();
-			List<VariableState> states = entry.getValue();
-
-			System.out.println("  Variable index " + varIndex + " has " + states.size() + " states:");
-			for (VariableState state : states) {
-				System.out.println("    Position: " + state.position +
-						", Value: " + (state.value != null ? state.value : "null") +
-						", Dependencies: " + state.dependsOn);
-			}
-		}
-	}
-
-	// Add this helper method to debug print instructions
-	private void debugPrintInstructions(InstructionList il) {
-		for (InstructionHandle handle = il.getStart(); handle != null; handle = handle.getNext()) {
-			Instruction inst = handle.getInstruction();
-			System.out.println("  Pos " + handle.getPosition() + ": " + inst.toString());
-		}
-	}
-
 
 
 	// Check if method contains System.out.println calls
@@ -852,6 +772,7 @@ public class ConstantFolder
 		}
 		return false;
 	}
+
 
 	private void identifyVariableScopes(InstructionList il, ConstantPoolGen cpgen,
 										Map<Integer, List<VariableScope>> variableScopeMap) {
@@ -877,6 +798,7 @@ public class ConstantFolder
 		}
 	}
 
+
 	private Number extractConstantValue(InstructionHandle handle, ConstantPoolGen cpgen) {
 		Instruction inst = handle.getInstruction();
 
@@ -887,7 +809,6 @@ public class ConstantFolder
 				Object val = ((LDC) inst).getValue(cpgen);
 				return (val instanceof Number) ? (Number) val : null;
 			} catch (RuntimeException e) {
-				// Log or silently ignore the unrecognized constant type
 				return null;
 			}
 		} else if (inst instanceof LDC2_W) {
@@ -898,7 +819,6 @@ public class ConstantFolder
 				return null;
 			}
 		}
-
 
 		if (handle.getPrev() != null && handle.getPrev().getPrev() != null) {
 			InstructionHandle op1 = handle.getPrev().getPrev();
@@ -918,7 +838,7 @@ public class ConstantFolder
 		return null;
 	}
 
-	// Check if a variable is reassigned between the given positions
+
 	private boolean isVariableReassigned(int varIndex, int fromPosition, int toPosition,
 										 Map<Integer, List<VariableState>> variableStates) {
 		List<VariableState> states = variableStates.get(varIndex);
@@ -929,11 +849,10 @@ public class ConstantFolder
 				return true;
 			}
 		}
-
 		return false;
 	}
 
-	// Create a constant instruction for the given value
+
 	private Instruction createConstantInstruction(Number value, ConstantPoolGen cpgen) {
 		if (value instanceof Integer) {
 			int intVal = value.intValue();
@@ -953,7 +872,6 @@ public class ConstantFolder
 		} else if (value instanceof Double) {
 			return new LDC2_W(cpgen.addDouble(value.doubleValue()));
 		}
-
 		throw new IllegalArgumentException("Unsupported constant type: " + value.getClass().getName());
 	}
 
@@ -964,7 +882,6 @@ public class ConstantFolder
 		if (handle == null || handle.getNext() == null || handle.getNext().getNext() == null) {
 			return false;
 		}
-
 		InstructionHandle load1 = handle;
 		InstructionHandle const1 = handle.getNext();
 		InstructionHandle addInst = handle.getNext().getNext();
@@ -975,7 +892,6 @@ public class ConstantFolder
 			return false;
 		}
 
-		// Check if there's a subtraction after the addition
 		InstructionHandle load2 = addInst.getNext();
 		InstructionHandle subInst = load2 != null ? load2.getNext() : null;
 
@@ -985,13 +901,10 @@ public class ConstantFolder
 			return false;
 		}
 
-		// Get the variable indices
 		int var1Idx = ((LoadInstruction)load1.getInstruction()).getIndex();
 		int var2Idx = ((LoadInstruction)load2.getInstruction()).getIndex();
 
-		// Check if this matches the pattern b + 1234 - a
-		// var1 should be b (likely var index 1) and var2 should be a (likely var index 0)
-		return var1Idx != var2Idx;  // At minimum, they should be different variables
+		return var1Idx != var2Idx;
 	}
 
 
@@ -1000,17 +913,13 @@ public class ConstantFolder
 		boolean changed = false;
 		il.setPositions(true);
 
-		// Check for return statement in methodOne
 		boolean foundReturnExpr = false;
-
-		// Maximum iterations to prevent infinite loops
 		int maxIterations = 1000;
 		int iterations = 0;
 
 		for (InstructionHandle handle = il.getStart(); handle != null && iterations < maxIterations;) {
 			iterations++;
 
-			// Look for return statement pattern (likely a load + constant + add + load + sub pattern)
 			if (handle.getNext() != null && handle.getNext().getNext() != null &&
 					handle.getInstruction() instanceof LoadInstruction &&
 					handle.getNext().getInstruction() instanceof LDC &&
@@ -1029,39 +938,6 @@ public class ConstantFolder
 					if (handle.getNext().getInstruction() instanceof LDC) {
 						Object val = ((LDC)handle.getNext().getInstruction()).getValue(cpgen);
 						if (val instanceof Number) constVal = (Number)val;
-					}
-
-					System.out.println("DEBUG: Found potential return statement pattern!");
-					System.out.println("  First variable index: " + var1Index);
-					System.out.println("  Constant value: " + constVal);
-					System.out.println("  Second variable index: " + var2Index);
-
-					// Debug values of these variables
-					List<VariableState> var1States = variableStates.get(var1Index);
-					List<VariableState> var2States = variableStates.get(var2Index);
-
-					if (var1States != null && !var1States.isEmpty()) {
-						VariableState latest = var1States.get(var1States.size() - 1);
-						System.out.println("  Latest value of first variable: " + latest.value);
-						System.out.println("  Dependencies: " + latest.dependsOn);
-					}
-
-					if (var2States != null && !var2States.isEmpty()) {
-						VariableState latest = var2States.get(var2States.size() - 1);
-						System.out.println("  Latest value of second variable: " + latest.value);
-						System.out.println("  Dependencies: " + latest.dependsOn);
-					}
-
-					if (var1States != null && var2States != null &&
-							!var1States.isEmpty() && !var2States.isEmpty() && constVal != null) {
-						VariableState latest1 = var1States.get(var1States.size() - 1);
-						VariableState latest2 = var2States.get(var2States.size() - 1);
-
-						if (latest1.value != null && latest2.value != null) {
-							int result = latest1.value.intValue() + constVal.intValue() - latest2.value.intValue();
-							System.out.println("  Expected calculation: " + latest1.value + " + " +
-									constVal + " - " + latest2.value + " = " + result);
-						}
 					}
 				}
 			}
@@ -1091,19 +967,16 @@ public class ConstantFolder
 				continue;
 			}
 
-			// Calculate result
 			Number result = calculateArithmeticResult(v1, v2, (ArithmeticInstruction) h3.getInstruction());
 			if (result == null) {
 				handle = handle.getNext();
 				continue;
 			}
 
-			// Replace with constant
 			try {
 				Instruction constInstr = createConstantInstruction(result, cpgen);
 				InstructionHandle newHandle = il.insert(h1, constInstr);
 
-				// Update references to the replaced instructions
 				redirectTargeters(h1, newHandle);
 				redirectTargeters(h2, newHandle);
 				redirectTargeters(h3, newHandle);
@@ -1114,7 +987,6 @@ public class ConstantFolder
 				handle = newHandle.getNext();
 				changed = true;
 
-				// If this is followed by a store, update the variable state
 				if (handle != null && handle.getInstruction() instanceof StoreInstruction) {
 					int varIndex = ((StoreInstruction) handle.getInstruction()).getIndex();
 					List<VariableState> states = variableStates.computeIfAbsent(varIndex, k -> new ArrayList<>());
@@ -1126,10 +998,6 @@ public class ConstantFolder
 				System.err.println("Target lost during expression folding: " + e.getMessage());
 				handle = handle.getNext();
 			}
-		}
-
-		if (!foundReturnExpr) {
-			System.out.println("DEBUG: Did not find a return statement pattern in the method");
 		}
 
 		if (iterations >= maxIterations) {
@@ -1144,7 +1012,6 @@ public class ConstantFolder
 								   Map<Integer, List<VariableScope>> variableScopeMap) {
 		Instruction inst = handle.getInstruction();
 
-		// Direct constants
 		if (inst instanceof ConstantPushInstruction) {
 			return ((ConstantPushInstruction) inst).getValue();
 		} else if (inst instanceof LDC) {
@@ -1163,7 +1030,6 @@ public class ConstantFolder
 			}
 		}
 
-		// Variable loads - find the value from the appropriate scope
 		if (inst instanceof LoadInstruction) {
 			int varIndex = ((LoadInstruction) inst).getIndex();
 			List<VariableScope> scopes = variableScopeMap.get(varIndex);
@@ -1181,13 +1047,11 @@ public class ConstantFolder
 	}
 
 
-	// Get value of an operand (constant or variable)
 	private Number getOperandValue(InstructionHandle handle,
 								   Map<Integer, List<VariableState>> variableStates,
 								   ConstantPoolGen cpgen) {
 		Instruction inst = handle.getInstruction();
 
-		// Direct constants
 		if (inst instanceof ConstantPushInstruction) {
 			return ((ConstantPushInstruction) inst).getValue();
 		} else if (inst instanceof LDC) {
@@ -1198,7 +1062,6 @@ public class ConstantFolder
 			return (val instanceof Number) ? (Number) val : null;
 		}
 
-		// Variable loads
 		if (inst instanceof LoadInstruction) {
 			int varIndex = ((LoadInstruction) inst).getIndex();
 			int position = handle.getPosition();
@@ -1215,7 +1078,6 @@ public class ConstantFolder
 				}
 
 				if (mostRecent != null && mostRecent.value != null) {
-					// Check if all dependencies are constant
 					boolean allDepsConstant = true;
 					for (Integer depIdx : mostRecent.dependsOn) {
 						if (isVariableReassigned(depIdx, mostRecent.position, position, variableStates)) {
@@ -1252,7 +1114,6 @@ public class ConstantFolder
 			String pattern = "(LDC|LDC2_W) (LDC|LDC2_W) (IADD|ISUB|IMUL|IDIV|LADD|LSUB|LMUL|LDIV|FADD|FSUB|FMUL|FDIV|DADD|DSUB|DMUL|DDIV)";
 			for (Iterator<?> it = f.search(pattern); it.hasNext();) {
 				InstructionHandle[] match = (InstructionHandle[]) it.next();
-				// Basic folding implementation...
 				changed = true;
 			}
 
@@ -1267,16 +1128,13 @@ public class ConstantFolder
 		gen = cgen;
 		this.optimized = gen.getJavaClass();
 
-		// Now apply more advanced optimizations
 		try {
 			cgen = new ClassGen(this.optimized);
 			cgen.setMajor(50);
 			cpgen = cgen.getConstantPool();
 
-			// Apply constant variable folding
 			constant_var_fold(cgen, cpgen);
 
-			// Apply dynamic variable folding with improved algorithm
 			dynamic_var_fold(cgen, cpgen);
 
 			gen = cgen;
