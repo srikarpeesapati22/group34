@@ -503,55 +503,27 @@ public class ConstantFolder
 			}
 			// Handle arithmetic operations
 			else if (prev.getInstruction() instanceof ArithmeticInstruction) {
+				// In bytecode, the lower stack value is pushed first.
+				// For an operation like "b - 67":
+				//    op2Handle (earlier instruction) pushes b
+				//    op1Handle (later instruction) pushes 67
+				// Hence, we need:
+				//    first operand = value from op2Handle, second operand = value from op1Handle.
 				InstructionHandle op1Handle = prev.getPrev();
-				InstructionHandle op2Handle = op1Handle != null ? op1Handle.getPrev() : null;
+				InstructionHandle op2Handle = (op1Handle != null) ? op1Handle.getPrev() : null;
 
 				if (op1Handle != null && op2Handle != null) {
-					// Try to get values and dependencies for operands
-					Number v1 = null;
-					Number v2 = null;
-					Set<Integer> deps1 = new HashSet<>();
-					Set<Integer> deps2 = new HashSet<>();
+					Number v_first = null;  // will hold the value from op2Handle (first pushed operand)
+					Number v_second = null; // will hold the value from op1Handle (second pushed operand)
+					Set<Integer> deps_first = new HashSet<>();
+					Set<Integer> deps_second = new HashSet<>();
 
-					// First operand
-					if (op1Handle.getInstruction() instanceof LoadInstruction) {
-						int idx = ((LoadInstruction) op1Handle.getInstruction()).getIndex();
-						deps1.add(idx);
-
-						List<VariableState> states = variableStates.get(idx);
-						if (states != null && !states.isEmpty()) {
-							// Find most recent state
-							VariableState mostRecent = null;
-							for (VariableState state : states) {
-								if (state.position < position &&
-										(mostRecent == null || state.position > mostRecent.position)) {
-									mostRecent = state;
-								}
-							}
-
-							if (mostRecent != null && mostRecent.value != null) {
-								v1 = mostRecent.value;
-								deps1.addAll(mostRecent.dependsOn);
-							}
-						}
-					} else if (op1Handle.getInstruction() instanceof ConstantPushInstruction) {
-						v1 = ((ConstantPushInstruction) op1Handle.getInstruction()).getValue();
-					} else if (op1Handle.getInstruction() instanceof LDC) {
-						Object val = ((LDC) op1Handle.getInstruction()).getValue(cpgen);
-						if (val instanceof Number) v1 = (Number) val;
-					} else if (op1Handle.getInstruction() instanceof LDC2_W) {
-						Object val = ((LDC2_W) op1Handle.getInstruction()).getValue(cpgen);
-						if (val instanceof Number) v1 = (Number) val;
-					}
-
-					// Second operand
+					// Process the first operand from op2Handle
 					if (op2Handle.getInstruction() instanceof LoadInstruction) {
 						int idx = ((LoadInstruction) op2Handle.getInstruction()).getIndex();
-						deps2.add(idx);
-
+						deps_first.add(idx);
 						List<VariableState> states = variableStates.get(idx);
 						if (states != null && !states.isEmpty()) {
-							// Find most recent state
 							VariableState mostRecent = null;
 							for (VariableState state : states) {
 								if (state.position < position &&
@@ -559,29 +531,54 @@ public class ConstantFolder
 									mostRecent = state;
 								}
 							}
-
 							if (mostRecent != null && mostRecent.value != null) {
-								v2 = mostRecent.value;
-								deps2.addAll(mostRecent.dependsOn);
+								v_first = mostRecent.value;
+								deps_first.addAll(mostRecent.dependsOn);
 							}
 						}
 					} else if (op2Handle.getInstruction() instanceof ConstantPushInstruction) {
-						v2 = ((ConstantPushInstruction) op2Handle.getInstruction()).getValue();
+						v_first = ((ConstantPushInstruction) op2Handle.getInstruction()).getValue();
 					} else if (op2Handle.getInstruction() instanceof LDC) {
 						Object val = ((LDC) op2Handle.getInstruction()).getValue(cpgen);
-						if (val instanceof Number) v2 = (Number) val;
+						if (val instanceof Number) v_first = (Number) val;
 					} else if (op2Handle.getInstruction() instanceof LDC2_W) {
 						Object val = ((LDC2_W) op2Handle.getInstruction()).getValue(cpgen);
-						if (val instanceof Number) v2 = (Number) val;
+						if (val instanceof Number) v_first = (Number) val;
 					}
 
-					// Calculate result if we have both values
-					if (v1 != null && v2 != null) {
-						value = calculateArithmeticResult(v1, v2, (ArithmeticInstruction) prev.getInstruction());
+					// Process the second operand from op1Handle
+					if (op1Handle.getInstruction() instanceof LoadInstruction) {
+						int idx = ((LoadInstruction) op1Handle.getInstruction()).getIndex();
+						deps_second.add(idx);
+						List<VariableState> states = variableStates.get(idx);
+						if (states != null && !states.isEmpty()) {
+							VariableState mostRecent = null;
+							for (VariableState state : states) {
+								if (state.position < position &&
+										(mostRecent == null || state.position > mostRecent.position)) {
+									mostRecent = state;
+								}
+							}
+							if (mostRecent != null && mostRecent.value != null) {
+								v_second = mostRecent.value;
+								deps_second.addAll(mostRecent.dependsOn);
+							}
+						}
+					} else if (op1Handle.getInstruction() instanceof ConstantPushInstruction) {
+						v_second = ((ConstantPushInstruction) op1Handle.getInstruction()).getValue();
+					} else if (op1Handle.getInstruction() instanceof LDC) {
+						Object val = ((LDC) op1Handle.getInstruction()).getValue(cpgen);
+						if (val instanceof Number) v_second = (Number) val;
+					} else if (op1Handle.getInstruction() instanceof LDC2_W) {
+						Object val = ((LDC2_W) op1Handle.getInstruction()).getValue(cpgen);
+						if (val instanceof Number) v_second = (Number) val;
+					}
 
-						// Combine dependencies
-						dependencies.addAll(deps1);
-						dependencies.addAll(deps2);
+					if (v_first != null && v_second != null) {
+						// Note: For subtraction and division the order matters.
+						value = calculateArithmeticResult(v_first, v_second, (ArithmeticInstruction) prev.getInstruction());
+						dependencies.addAll(deps_first);
+						dependencies.addAll(deps_second);
 					}
 				}
 			}
